@@ -14,7 +14,7 @@
     DynamicJsonBuffer jsonBuffer(256);
     JsonObject& root = jsonBuffer.createObject();
 
-    root["time"] = getTimeAsString( timeString );
+    root["time"] = getTimeAsString2( timeString );
     if( mlxPresent )
     {
       root["Sky Temperature"] = (float) skyTemperature;
@@ -34,7 +34,7 @@
     DynamicJsonBuffer jsonBuffer(256);
     JsonObject& root = jsonBuffer.createObject();
 
-    root["time"] = getTimeAsString( timeString );
+    root["time"] = getTimeAsString2( timeString );
     if( tslPresent )
     {
       root["Brightness"] = (float) lux;
@@ -55,7 +55,7 @@
     //Update the error message handling.
     // JsonArray errors = root.createArray( "errors" );
     
-    root["time"] = getTimeAsString( timeString );
+    root["time"] = getTimeAsString2( timeString );
     if( mlxPresent )
     {
       root["Sky Temperature"] = (float) skyTemperature;
@@ -104,9 +104,8 @@
     DynamicJsonBuffer jsonBuffer(256);
     JsonObject& root = jsonBuffer.createObject();
 
-    root["time"] = getTimeAsString( timeString );
+    root["time"] = getTimeAsString2( timeString );
     //Todo add skyTemp and SQM reading here
-    
     
     //root.printTo( Serial );
     root.printTo(message);
