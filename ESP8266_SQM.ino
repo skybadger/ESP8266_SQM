@@ -24,19 +24,21 @@ Use TSL2591 Library for sky brightness (SQR) measurements
  GPIO 5,0 to SCL 
  All 3.3v logic. 
  */
-
+#include "DebugSerial.h"
 #include <esp8266_peri.h> //register map and access
 #include <ESP8266WiFi.h>
-#define MQTT_MAX_PACKET_SIZE 300
-#include <PubSubClient.h> //https://pubsubclient.knolleary.net/api.html
-#include <EEPROM.h>
 #include <Wire.h>         //https://playground.arduino.cc/Main/WireLibraryDetailedReference
 #include <Time.h>         //Look at https://github.com/PaulStoffregen/Time for a more useful internal timebase library
 #include <WiFiUdp.h>
 #include <ESP8266WebServer.h>
 #include <ESP8266HTTPUpdateServer.h>
+#include <EEPROM.h>
+#include <EEPROMAnything.h>
 #include <ArduinoJson.h>  //https://arduinojson.org/v5/api/
+#define MQTT_MAX_PACKET_SIZE 300
+#include <PubSubClient.h> //https://pubsubclient.knolleary.net/api.html
 #include <Math.h>         //Used for PI.
+#include <GDBStub.h> //Debugging stub for GDB
 
 //Ntp dependencies - available from v2.4
 #include <time.h>
@@ -50,29 +52,30 @@ Use TSL2591 Library for sky brightness (SQR) measurements
 time_t now; //use as 'gmtime(&now);'
 
 //SSIDs and passwords are pulled in to protect from GIT over-sharing.
-#include "skybadger_strings.h"
-char* defaultHostname        = "espSQM01";
-char* thisID                 = "espSQM01";
+#include "SkybadgerStrings.h"
 char* myHostname             = "espSQM01";
+char* thisID                 = "espSQM01";
+
 
 //MQTT Pubsubclient variables
 WiFiClient espClient;
 PubSubClient client(espClient);
 volatile bool callbackFlag = 0;
+//Used by MQTT reconnect
 volatile bool timerSet  = false;
-volatile bool timeoutFlag = false;
 
 //Hardware-specific device system functions - reset/restart etc
 EspClass device;
 ETSTimer timer, timeoutTimer;
 volatile bool newDataFlag = false;
+volatile bool timeoutFlag = false;
 
 const int MAXDATA = 3600;
 
 //Function definitions
-void onTimer(void);
-String& getTimeAsString2(String& );
 uint32_t inline ICACHE_RAM_ATTR myGetCycleCount();
+void onTimer(void);
+void onTimeoutTimer(void);
 void callback(char* topic, byte* payload, unsigned int length) ;
 
 //Sky Temperature Sensor
@@ -93,6 +96,10 @@ float lux = 0.0F;
 // specify the port to listen on as an argument
 ESP8266WebServer server(80);
 ESP8266HTTPUpdateServer httpUpdater;
+
+//Timestring and MQTT reconnect functions
+#include "Skybadger_common_funcs.h"
+
 //Web Handler function definitions
 #include "ESP8266_SQMHandlers.h"
 
@@ -120,19 +127,25 @@ void setup_wifi()
   Serial.printf("DNS address 1: %s\n\r", WiFi.dnsIP(1).toString().c_str() );
 
   delay(5000);
+
+  //Setup sleep parameters
+  //WiFi.mode(WIFI_NONE_SLEEP);
+  wifi_set_sleep_type(NONE_SLEEP_T);
 }
 
 void setup()
 {
   Serial.begin( 115200, SERIAL_8N1, SERIAL_TX_ONLY);
-  Serial.println("ESP starting.");
+  Serial.println(F("ESP starting."));
+  //gdbstub_init();
   
   //Start NTP client
   struct timezone tzone;
   tzone.tz_minuteswest = 480;
   tzone.tz_dsttime = DST_MN;
-  //configTime( &tzone, timeServer1, timeServer1, timeServer3 );
-  //Seems to default to TZ = 8 hours EAST anyway.
+  //configTime(TZ_SEC, DST_SEC, "pool.ntp.org");
+  //configTime( 0, timeServer1, timeServer1, timeServer3 );
+  //This seems to default to TZ = 8 hours EAST anyway.
   configTime( TZ_SEC, DST_SEC, timeServer1, timeServer1, timeServer3 );
   //syncTime();
   
@@ -234,9 +247,6 @@ void setup()
   ets_timer_arm_new( &timer, 1000, 1/*repeat*/, 1);
   //ets_timer_arm_new( &timeoutTimer, 2500, 0/*one-shot*/, 1);
   
-  //Setup sleep parameters
-  //wifi_set_sleep_type(LIGHT_SLEEP_T);
-
   Serial.println( "Setup complete" );
 }
 
@@ -252,7 +262,6 @@ void onTimeoutTimer( void* pArg )
   //Read command list and apply. 
   timeoutFlag = true;
 }
-
 
 //Main processing loop
 void loop()
@@ -272,7 +281,7 @@ void loop()
   
   if( newDataFlag == true ) //every second
   {
-    Serial.printf( "Time: %s \n", getTimeAsString2( timestamp ).c_str() );
+    //Serial.printf( "Time: %s \n", getTimeAsString2( timestamp ).c_str() );
 
     root["time"] = getTimeAsString2( timestamp );
     
@@ -359,7 +368,7 @@ void loop()
     {
       publishTLS();
       publishMLX();
-      publishHealth();
+      
       callbackFlag = false;
     }
     client.loop();
@@ -369,7 +378,6 @@ void loop()
      reconnectNB();
   }   
 }
-
 
 /* MQTT callback for subscription and topic.
  * Only respond to valid states ""
@@ -482,173 +490,6 @@ void publishHealth(void)
   else
     Serial.printf( " Failed to publish health message: '%s' to %s\n",  output.c_str(), outTopic.c_str() );
   return;
-}
-
-/*
-Returns the current state of the client. If a connection attempt fails, this can be used to get more information about the failure.
-int - the client state, which can take the following values (constants defined in PubSubClient.h):
--4 : MQTT_CONNECTION_TIMEOUT - the server didn't respond within the keepalive time
--3 : MQTT_CONNECTION_LOST - the network connection was broken
--2 : MQTT_CONNECT_FAILED - the network connection failed
--1 : MQTT_DISCONNECTED - the client is disconnected cleanly
-0 : MQTT_CONNECTED - the client is connected
-1 : MQTT_CONNECT_BAD_PROTOCOL - the server doesn't support the requested version of MQTT
-2 : MQTT_CONNECT_BAD_CLIENT_ID - the server rejected the client identifier
-3 : MQTT_CONNECT_UNAVAILABLE - the server was unable to accept the connection
-4 : MQTT_CONNECT_BAD_CREDENTIALS - the username/password were rejected
-5 : MQTT_CONNECT_UNAUTHORIZED - the client was not authorized to connect
-*/
-void reconnectNB() 
-{
-  //Non-blocking version
-   if ( timerSet ) //timer is running but not timed out. 
-   {
-     if( timeoutFlag ) //Timeout - try again
-     {   
-         Serial.print("Repeating MQTT connection attempt...");
-         if ( !client.connect(thisID, pubsubUserID, pubsubUserPwd ) )
-         {  //Set a one-off timer to try next time around. 
-            Serial.print("connect failed, rc=");
-            Serial.println(client.state());
-            timeoutFlag = false;
-            timerSet = true;
-            ets_timer_arm_new( &timeoutTimer, 5000, 0/*one-shot*/, 1);           
-         }
-         else
-         { //Stop - all connected again
-            timerSet = false;
-         }
-      }
-   }
-   else //timer not set 
-   {
-     Serial.print("Attempting MQTT connection...");
-     if ( !client.connect(thisID, pubsubUserID, pubsubUserPwd ) )
-     {  
-        Serial.print("connect failed, rc=");
-        Serial.println(client.state());
-
-        //Set a one-off timer to try next time around. 
-        timeoutFlag = false;
-        timerSet = true;
-        ets_timer_arm_new( &timeoutTimer, 5000, 0/*one-shot*/, 1);           
-     }
-     else
-     {
-        publishHealth();
-        client.subscribe(inTopic);
-        Serial.println("MQTT connection regained.");
-     }
-   }
-return;
-}
-
-void reconnect() 
-{
-  String output;
-  String timestamp;
- 
-  //Blocking version
-  // Loop until we're reconnected
-  while (!client.connected()) 
-  {
-    Serial.print("Attempting MQTT connection...");
-    // Attempt to connect
-    if (client.connect(thisID, pubsubUserID, pubsubUserPwd )) 
-    {
-      Serial.println("connected");
-      publishHealth();
-      // ... and resubscribe
-      client.subscribe(inTopic);
-    }
-    else
-    {
-      Serial.print("failed, rc=");
-      Serial.print(client.state());
-      Serial.println(" try again in 5 seconds");
-      // Wait 5 seconds before retrying
-      for(int i = 0; i<5000; i++)
-      {
-        delay(1);
-        //delay(20);
-        //yield();
-      }
-    }
-  }
-}
-
-/*
- * Helper functions
- */
-
-void syncTime()
-{
-  //The reason to do this is that we timestamp the data with the network time. 
-  //However the network time is only recorded to the second since 1970 on the ESP8266
-  //
-  struct timeval tv;
-  gettimeofday( &tv, nullptr );  
-  
-  struct timezone tzone;
-  tzone.tz_minuteswest = 0;
-  tzone.tz_dsttime = DST_MN;
-  
-  //Look for the boundary change of second
-  time_t now, last;
-  now = time(nullptr);
-  struct tm* gnow = gmtime( &now );
-  tv.tv_sec = (((gnow->tm_hour*60) + gnow->tm_min )*60) + gnow->tm_sec;
-  last = now;
-  while( ( now - last ) == 0 )
-  {
-      last = now;
-      now = time( nullptr );
-  }
-
-  //As soon as gmtime seconds change - update the system clock usec counter.
-  tv.tv_usec = 0;
-  settimeofday( &tv, &tzone );
-}
- 
-String& getTimeAsString2(String& output)
-{
-   //relies on the system clock being synchronised with the sntp clock at the ms level. 
-   char buf[64];
-   now = time( nullptr );
-   sprintf( buf, "%lu%03lu", now + (millis() % 1000 ) );
-   output = String( buf);
-   return output;
-}
-
-String& getTimeAsString(String& output)
-{
-/* ISO Dates (Date-Time)
-   ISO dates can be written with added hours, minutes, and seconds (YYYY-MM-DDTHH:MM:SSZ)
-   Z indicates Zulu or GMT time, 
-   For other timezones use +/-HH:MM instead of Z
-   Can replace 'T' with ' ' - works in javascript nicely.
-*/
-    struct timeval tv;
-    gettimeofday( &tv, nullptr );
-    //double milliTimestamp = ((double) (tv.tv_sec))*1000.0 + tv.tv_usec/1000.0;
-    //Serial.println( tv.tv_sec );//works in seconds - get 10 digits 
-    //Serial.println( tv.tv_usec/1000 );//works in usecs - get 5 digits
-    //Serial.println( milliTimestamp, 3 ); //Doesnt work when you put them together - overflows
-
-    //get time, maintained by NTP, but only to the second. 
-    //Hence we'd like to use the system time in ms from 1970 - which is what the js date parser would like too, but esp cant provide 
-    //an integer long enough it seems. 
-    now = time(nullptr);
-    struct tm* gnow = gmtime( &now );
-    
-    //This works but its heavy for an embedded device.
-    char buf[256];
-    sprintf( buf, "%4i-%02i-%02i %02i:%02i:%02.3fZ", gnow->tm_year + 1900, gnow->tm_mon +1, gnow->tm_mday, gnow->tm_hour, gnow->tm_min, (float) gnow->tm_sec + tv.tv_usec/1000000.0 );
-    
-    //String and Serial classes can't handle 'long long' - missing SerialHelper overload 
-    output = String(buf);
-    //Serial.print("timestamp value:");Serial.println( output ); 
-    return output;
 }
 
 uint32_t inline ICACHE_RAM_ATTR myGetCycleCount()
