@@ -110,7 +110,7 @@ void setup_wifi()
   WiFi.mode(WIFI_STA);
 
   //WiFi.setOutputPower( 20.5F );//full power WiFi
-  WiFi.begin(ssid1, password1 );
+  WiFi.begin(ssid2, password2 );
   Serial.print("Searching for WiFi..");
   while (WiFi.status() != WL_CONNECTED) 
   {
@@ -212,7 +212,7 @@ void setup()
     //tsl.setGain(TSL2591_GAIN_MAX);      // set 16x gain (for dim situations)
     
     // Changing the integration time gives you a longer time over which to sense light
-    // longer timelines are slower, but are good in very low light situtations!
+    // longer timelines are slower, but are good in very low light situations!
     tsl.setTiming(TSL2591_INTEGRATIONTIME_100MS);  // shortest integration time (bright light)
   
     //32-bit raw count where high word is IR, low word is IR+Visible
@@ -301,57 +301,57 @@ void loop()
       ir = lum >> 16;
       full = lum & 0x0FFFF;
       lux = tsl.calculateLux(full, ir);
-    }
 
-    //Manage gain to keep us in a HIGH COUNT range where possible. 
-    if ( ( lum & 0x0FFFF ) < 1000 )
-    {
-      //increase gain  
-      switch( tsl.getGain() )
+      //Manage gain to keep us in a HIGH COUNT range where possible. 
+      if ( ( full & 0x0FFFF ) < 1000 )
       {
-      case TSL2591_GAIN_LOW: tsl.setGain(TSL2591_GAIN_MED);break;
-      case TSL2591_GAIN_MED: tsl.setGain(TSL2591_GAIN_HIGH);break;
-      case TSL2591_GAIN_HIGH:tsl.setGain(TSL2591_GAIN_MAX);break;
-      case TSL2591_GAIN_MAX://Increase collection time.
-          switch ( tsl.getTiming() )
-          {
-            case TSL2591_INTEGRATIONTIME_100MS : tsl.setTiming( TSL2591_INTEGRATIONTIME_200MS ); break;
-            case TSL2591_INTEGRATIONTIME_200MS : tsl.setTiming( TSL2591_INTEGRATIONTIME_300MS ); break;
-            case TSL2591_INTEGRATIONTIME_300MS : tsl.setTiming( TSL2591_INTEGRATIONTIME_400MS ); break;
-            case TSL2591_INTEGRATIONTIME_400MS : tsl.setTiming( TSL2591_INTEGRATIONTIME_500MS ); break;
-            case TSL2591_INTEGRATIONTIME_500MS : tsl.setTiming( TSL2591_INTEGRATIONTIME_600MS ); break;
-            case TSL2591_INTEGRATIONTIME_600MS : /* Can't do nuffin */ ; break;
-            default: 
-                break;
-          }
+        //increase gain  
+        switch( tsl.getGain() )
+        {
+        case TSL2591_GAIN_LOW: tsl.setGain(TSL2591_GAIN_MED);break;
+        case TSL2591_GAIN_MED: tsl.setGain(TSL2591_GAIN_HIGH);break;
+        case TSL2591_GAIN_HIGH:tsl.setGain(TSL2591_GAIN_MAX);break;
+        case TSL2591_GAIN_MAX://Increase collection time.
+            switch ( tsl.getTiming() )
+            {
+              case TSL2591_INTEGRATIONTIME_100MS : tsl.setTiming( TSL2591_INTEGRATIONTIME_200MS ); break;
+              case TSL2591_INTEGRATIONTIME_200MS : tsl.setTiming( TSL2591_INTEGRATIONTIME_300MS ); break;
+              case TSL2591_INTEGRATIONTIME_300MS : tsl.setTiming( TSL2591_INTEGRATIONTIME_400MS ); break;
+              case TSL2591_INTEGRATIONTIME_400MS : tsl.setTiming( TSL2591_INTEGRATIONTIME_500MS ); break;
+              case TSL2591_INTEGRATIONTIME_500MS : tsl.setTiming( TSL2591_INTEGRATIONTIME_600MS ); break;
+              case TSL2591_INTEGRATIONTIME_600MS : /* Can't do nuffin */ ; break;
+              default: 
+                  break;
+            }
+            break;
+        default: 
           break;
-      default: 
-        break;
+        }
       }
-    }
-    else if ( ( lum & 0x0FFFF ) > 10000.0F )
-    {
-      //decrease gain  
-      switch( tsl.getGain() )
+      else if ( ( full & 0x0FFFF ) > 10000 )
       {
-      case TSL2591_GAIN_LOW: break;/* Can't do nuffin*/
-      case TSL2591_GAIN_MED: tsl.setGain(TSL2591_GAIN_LOW);break;
-      case TSL2591_GAIN_HIGH:tsl.setGain(TSL2591_GAIN_MED);break;
-      case TSL2591_GAIN_MAX: 
-          switch ( tsl.getTiming() )
-          {
-            //decrease collection time
-            case TSL2591_INTEGRATIONTIME_600MS : tsl.setTiming( TSL2591_INTEGRATIONTIME_500MS ); break;
-            case TSL2591_INTEGRATIONTIME_500MS : tsl.setTiming( TSL2591_INTEGRATIONTIME_400MS ); break;
-            case TSL2591_INTEGRATIONTIME_400MS : tsl.setTiming( TSL2591_INTEGRATIONTIME_300MS ); break;
-            case TSL2591_INTEGRATIONTIME_300MS : tsl.setTiming( TSL2591_INTEGRATIONTIME_200MS ); break;
-            case TSL2591_INTEGRATIONTIME_200MS : tsl.setTiming( TSL2591_INTEGRATIONTIME_100MS ); break;
-            case TSL2591_INTEGRATIONTIME_100MS : tsl.setGain(TSL2591_GAIN_HIGH); break; //reduce gain to next level
-            default: 
-                break;
-          }  
-      default: 
-        break;
+        //decrease gain  
+        switch( tsl.getGain() )
+        {
+        case TSL2591_GAIN_LOW: break;/* Can't do nuffin*/
+        case TSL2591_GAIN_MED: tsl.setGain(TSL2591_GAIN_LOW);break;
+        case TSL2591_GAIN_HIGH:tsl.setGain(TSL2591_GAIN_MED);break;
+        case TSL2591_GAIN_MAX: 
+            switch ( tsl.getTiming() )
+            {
+              //decrease collection time
+              case TSL2591_INTEGRATIONTIME_600MS : tsl.setTiming( TSL2591_INTEGRATIONTIME_500MS ); break;
+              case TSL2591_INTEGRATIONTIME_500MS : tsl.setTiming( TSL2591_INTEGRATIONTIME_400MS ); break;
+              case TSL2591_INTEGRATIONTIME_400MS : tsl.setTiming( TSL2591_INTEGRATIONTIME_300MS ); break;
+              case TSL2591_INTEGRATIONTIME_300MS : tsl.setTiming( TSL2591_INTEGRATIONTIME_200MS ); break;
+              case TSL2591_INTEGRATIONTIME_200MS : tsl.setTiming( TSL2591_INTEGRATIONTIME_100MS ); break;
+              case TSL2591_INTEGRATIONTIME_100MS : tsl.setGain(TSL2591_GAIN_HIGH); break; //reduce gain to next level
+              default: 
+                  break;
+            }  
+        default: 
+          break;
+        }
       }
     }
     //Reset timing flag
@@ -376,6 +376,7 @@ void loop()
   else   //reconnect - using timers to handle async attempts.
   {
      reconnectNB();
+     client.subscribe( inTopic );
   }   
 }
 
