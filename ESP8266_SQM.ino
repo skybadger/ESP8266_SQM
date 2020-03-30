@@ -5,6 +5,7 @@
  /skybadger/sensors/luminosity/host/[irflux, lumens, vis], 
  /skybadger/sensor/luminosity/host/[irflux, lumens, vis], 
  /skybadger/device/health/host
+ 
  Supports REST web interface on port 80 returning application/json string
  
 Uses I2C pins on ESP8266-01 to talk to devices. 
@@ -24,6 +25,11 @@ Use TSL2591 Library for sky brightness (SQR) measurements
  GPIO 5,0 to SCL 
  All 3.3v logic. 
  */
+/*
+ Needed this to debug a wifi stack exception caused by having the MQTT message size different betwwen here and the library code. 
+ Only became apparent after a rebuild much later after the edit. 
+ */
+#define _USE_EEPROM_ 
 #include "DebugSerial.h"
 #include <esp8266_peri.h> //register map and access
 #include <ESP8266WiFi.h>
@@ -35,9 +41,9 @@ Use TSL2591 Library for sky brightness (SQR) measurements
 #include <EEPROM.h>
 #include <EEPROMAnything.h>
 #include <ArduinoJson.h>  //https://arduinojson.org/v5/api/
-#define MQTT_MAX_PACKET_SIZE 300
+#define MQTT_MAX_PACKET_SIZE 256 //Have to change in source since Arduino wont recompile the library otherwise. 
 #include <PubSubClient.h> //https://pubsubclient.knolleary.net/api.html
-#include <Math.h>         //Used for PI.
+#include <Math.h>         //Used for PI && log10
 #include <GDBStub.h> //Debugging stub for GDB
 
 //Ntp dependencies - available from v2.4
@@ -45,7 +51,7 @@ Use TSL2591 Library for sky brightness (SQR) measurements
 #include <sys/time.h>
 #include <coredecls.h>
 #define TZ              0       // (utc+) TZ in hours
-#define DST_MN          60      // use 60mn for summer time in some countries
+#define DST_MN          00      // use 60mn for summer time in some countries
 #define TZ_MN           ((TZ)*60)
 #define TZ_SEC          ((TZ)*3600)
 #define DST_SEC         ((DST_MN)*60)
@@ -53,9 +59,18 @@ time_t now; //use as 'gmtime(&now);'
 
 //SSIDs and passwords are pulled in to protect from GIT over-sharing.
 #include "SkybadgerStrings.h"
-char* myHostname             = "espSQM01";
-char* thisID                 = "espSQM01";
 
+#if !defined MAX_NAME_LENGTH
+#define MAX_NAME_LENGTH 25
+#endif
+char* defaultHostname        = "espSQM00";
+#if defined _USE_EEPROM_
+char* myHostname             = nullptr;
+char* thisID                 = nullptr;
+#else
+char* myHostname             = "espSQM00";
+char* thisID                 = "espSQM00";
+#endif
 
 //MQTT Pubsubclient variables
 WiFiClient espClient;
@@ -70,7 +85,7 @@ ETSTimer timer, timeoutTimer;
 volatile bool newDataFlag = false;
 volatile bool timeoutFlag = false;
 
-const int MAXDATA = 3600;
+const int MAXDATA = 256;
 
 //Function definitions
 uint32_t inline ICACHE_RAM_ATTR myGetCycleCount();
@@ -91,6 +106,9 @@ TSL2591 tsl(TSL2591_ADDR, Wire );
 bool tslPresent = false;
 uint32_t lum = 0L;
 float lux = 0.0F;
+float sqmRootCal = 15.6F;
+float sqmGradientCal = -2.52F;
+float sqmOffsetCal = 0.0F;
 
 // Web server instance - create an instance of the server
 // specify the port to listen on as an argument
@@ -101,6 +119,7 @@ ESP8266HTTPUpdateServer httpUpdater;
 #include "Skybadger_common_funcs.h"
 
 //Web Handler function definitions
+#include "SQMEeprom.h"
 #include "ESP8266_SQMHandlers.h"
 
 void setup_wifi()
@@ -110,7 +129,7 @@ void setup_wifi()
   WiFi.mode(WIFI_STA);
 
   //WiFi.setOutputPower( 20.5F );//full power WiFi
-  WiFi.begin(ssid2, password2 );
+  WiFi.begin(ssid1, password1 );
   Serial.print("Searching for WiFi..");
   while (WiFi.status() != WL_CONNECTED) 
   {
@@ -126,11 +145,12 @@ void setup_wifi()
   Serial.printf("DNS address 0: %s\n\r", WiFi.dnsIP(0).toString().c_str() );
   Serial.printf("DNS address 1: %s\n\r", WiFi.dnsIP(1).toString().c_str() );
 
-  delay(5000);
-
   //Setup sleep parameters
   //WiFi.mode(WIFI_NONE_SLEEP);
-  wifi_set_sleep_type(NONE_SLEEP_T);
+  //wifi_set_sleep_type(NONE_SLEEP_T);
+  wifi_set_sleep_type(LIGHT_SLEEP_T);
+
+  delay(5000);
 }
 
 void setup()
@@ -140,17 +160,18 @@ void setup()
   //gdbstub_init();
   
   //Start NTP client
-  struct timezone tzone;
-  tzone.tz_minuteswest = 480;
-  tzone.tz_dsttime = DST_MN;
-  //configTime(TZ_SEC, DST_SEC, "pool.ntp.org");
-  //configTime( 0, timeServer1, timeServer1, timeServer3 );
+//  struct timezone tzone;
   //This seems to default to TZ = 8 hours EAST anyway.
   configTime( TZ_SEC, DST_SEC, timeServer1, timeServer1, timeServer3 );
   //syncTime();
   
   //Setup defaults first - via EEprom. 
-  //TODO
+  EEPROM.begin(256);
+#if defined _USE_EEPROM_
+  setupFromEeprom();
+#else
+  setDefaults();
+#endif 
   
   //Pins mode and direction setup for i2c on ESP8266-01
   pinMode(0, OUTPUT);
@@ -226,13 +247,16 @@ void setup()
   }
 
   //Setup webserver handler functions
-  server.on("/", handleStatusGet);
-  server.onNotFound(handleNotFound); 
-
-  //TODO add handler code in separate file. 
+  server.on("/",                HTTP_GET, handleRoot );
+  server.on("/setup",           HTTP_GET, handleSetupGet );
+  server.on("/status",          HTTP_GET, handleStatusGet );
   server.on("/skytemp",         HTTP_GET, handleSkyTempGet );
   server.on("/skybrightness",   HTTP_GET, handleSkyBrightnessGet );
-  
+  server.on("/restart",         HTTP_GET, handleRestart );
+  server.on("/hostname",        HTTP_PUT, handleHostnamePut );
+  server.on("/hostname",        HTTP_GET, handleHostnamePut );//For browsers that turn PUTs into GETs with arguments 
+  server.on("/calibrate",       HTTP_PUT, handleSQMCalPut );
+  server.onNotFound(handleNotFound);     
   httpUpdater.setup(&server);
   Serial.println( "Setup webserver handlers");
   server.begin();
@@ -366,9 +390,9 @@ void loop()
     //publish results
     if( callbackFlag == true )
     {
-      publishTLS();
+      publishTSL();
       publishMLX();
-      
+      publishHealth();
       callbackFlag = false;
     }
     client.loop();
@@ -431,7 +455,7 @@ void loop()
   }
  }
 
-void publishTLS( void )
+void publishTSL( void )
  {
   String outTopic;
   String output;
@@ -440,7 +464,7 @@ void publishTLS( void )
   getTimeAsString2( timestamp );
 
   //publish to our device topic(s)
-  DynamicJsonBuffer jsonBuffer(300);
+  DynamicJsonBuffer jsonBuffer(372);
   JsonObject& root = jsonBuffer.createObject();
 
   if( tslPresent )
@@ -449,8 +473,11 @@ void publishTLS( void )
     root["time"] = timestamp;
     root["sensor"] = "TSL2591";
     root["IR"]   = lum >> 16;
-    root["Int"]  = lum & 0x0FFFF;
+    //root["Int"]  = lum & 0x0FFFF;
     root["Lux"]  = lux;
+    root["msqas"] = sqmRootCal + ( (sqmGradientCal) * log(lux) )  + sqmOffsetCal;
+    root["gain"]     = (int) tsl.getGain();
+    root["exp"] = (int) tsl.getTiming();
 
     outTopic = outSenseTopic;
     outTopic.concat("SkyBrightness/");
@@ -459,9 +486,9 @@ void publishTLS( void )
     root.printTo( output );
 
     if ( client.publish( outTopic.c_str(), output.c_str(), true ) )        
-      Serial.printf( " Published TSL reading: '%s' to %s\n",  output.c_str(), outTopic.c_str() );
+      Serial.printf( " Published TSL reading: '%s' (length %i ) to %s\n",  output.c_str(), output.length(), outTopic.c_str() );
     else
-      Serial.printf( " Failed to publish TSL reading: '%s' to %s\n",  output.c_str(), outTopic.c_str() );    
+      Serial.printf( " Failed to publish TSL reading: '%s' (length %i ) to %s\n",  output.c_str(), output.length(), outTopic.c_str() );    
   }
  return;
  }
@@ -481,7 +508,7 @@ void publishHealth(void)
   JsonObject& root = jsonBuffer.createObject();
   root["time"] = timestamp;
   root["hostname"] = myHostname;
-  root["message"] = "Client listening";
+  root["message"] = "Listening";
   root.printTo( output );
   outTopic = outHealthTopic;
   outTopic.concat( myHostname );  
